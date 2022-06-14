@@ -4,9 +4,6 @@
 #include "precomp.h"
 #include "Row.hpp"
 #include "textBuffer.hpp"
-#include "../types/inc/convert.hpp"
-
-#include <intrin.h>
 
 #pragma warning(push, 1)
 
@@ -18,16 +15,38 @@
 // Return Value:
 // - constructed object
 ROW::ROW(wchar_t* buffer, uint16_t* indices, const uint16_t rowWidth, const TextAttribute& fillAttribute) :
+    _charsBuffer{ buffer },
     _chars{ buffer },
-    _charsCapacity{ rowWidth },
     _indices{ indices },
+    _charsCapacity{ rowWidth },
     _indicesCount{ rowWidth },
     _attr{ rowWidth, fillAttribute }
 {
-    if (buffer)
+    _init();
+}
+
+ROW::~ROW()
+{
+    _dealloc();
+}
+
+void ROW::_dealloc() const noexcept
+{
+    if (_chars != _charsBuffer)
     {
-        // TODO
-        wmemset(_chars, UNICODE_SPACE, _indicesCount);
+        delete[] _chars;
+    }
+    if (_dbcsPaddedColumns)
+    {
+        delete[] _dbcsPaddedColumns;
+    }
+}
+
+void ROW::_init() const noexcept
+{
+    if (_chars)
+    {
+        std::fill_n(_chars, _indicesCount, UNICODE_SPACE);
         std::iota(_indices, _indices + _indicesCount + 1, static_cast<uint16_t>(0));
     }
 }
@@ -40,27 +59,27 @@ ROW::ROW(wchar_t* buffer, uint16_t* indices, const uint16_t rowWidth, const Text
 // - <none>
 bool ROW::Reset(const TextAttribute& Attr)
 {
-    wmemset(_chars, UNICODE_SPACE, _indicesCount);
-    std::iota(_indices, _indices + _indicesCount + 1, static_cast<uint16_t>(0));
+    _dealloc();
+
+    _chars = _charsBuffer;
+    _dbcsPaddedColumns = nullptr;
+
+    _charsCapacity = _indicesCount;
 
     _attr = { gsl::narrow_cast<uint16_t>(_indicesCount), Attr };
+
     _lineRendition = LineRendition::SingleWidth;
     _wrapForced = false;
     _doubleBytePadded = false;
 
+    _init();
     return true;
 }
 
-// Routine Description:
-// - clears char data in column in row
-// Arguments:
-// - column - 0-indexed column index
-// Return Value:
-// - <none>
-void ROW::ClearColumn(const til::CoordType column)
+void ROW::ClearCell(const til::CoordType column)
 {
-    THROW_HR_IF(E_INVALIDARG, column >= size());
-    ClearCell(column);
+    static constexpr std::wstring_view space{ L" " };
+    ReplaceCharacters(column, 1, space);
 }
 
 // Routine Description:
@@ -100,7 +119,7 @@ OutputCellIterator ROW::WriteCells(OutputCellIterator it, const til::CoordType i
             {
                 // Otherwise, commit this color into the run and save off the new one.
                 // Now commit the new color runs into the attr row.
-                Replace(colorStarts, currentIndex, currentColor);
+                _replaceAttributes(colorStarts, currentIndex, currentColor);
                 currentColor = it->TextAttr();
                 colorUses = 1;
                 colorStarts = currentIndex;
@@ -139,7 +158,7 @@ OutputCellIterator ROW::WriteCells(OutputCellIterator it, const til::CoordType i
                 static constexpr std::wstring_view dbcsPaddingChars{ L"\xFFFF" };
                 if (chars == dbcsPaddingChars && currentIndex != 0)
                 {
-                    const auto col = currentIndex - 1u;
+                    const auto col = currentIndex - 1;
                     const auto idx = _indices[col];
                     wchar_t wchs[2];
                     wchs[0] = _chars[idx];
@@ -172,97 +191,52 @@ OutputCellIterator ROW::WriteCells(OutputCellIterator it, const til::CoordType i
     // Now commit the final color into the attr row
     if (colorUses)
     {
-        Replace(colorStarts, currentIndex, currentColor);
+        _replaceAttributes(colorStarts, currentIndex, currentColor);
     }
 
     return it;
 }
 
-void ROW::Resize(wchar_t* chars, uint16_t* indices, const size_t newWidth)
+void ROW::_replaceAttributes(const til::CoordType beginIndex, const til::CoordType endIndex, const TextAttribute& newAttr)
 {
-    uint16_t colsToCopy = 0;
-    uint16_t charsToCopy = 0;
-    if (_indices)
-    {
-        colsToCopy = gsl::narrow_cast<uint16_t>(std::min(_indicesCount, newWidth));
-        charsToCopy = _indices[colsToCopy];
-        for (; colsToCopy != 0 && _indices[colsToCopy - 1] == charsToCopy; --colsToCopy)
-        {
-        }
-    }
-
-    const auto trailingWhitespace = newWidth - colsToCopy;
-    const auto charsCapacity = charsToCopy + trailingWhitespace;
-    if (charsCapacity > newWidth)
-    {
-        chars = new wchar_t[](charsCapacity);
-    }
-
-    bool* dbcsPaddedColumns = nullptr;
-    if (_dbcsPaddedColumns)
-    {
-        dbcsPaddedColumns = new bool[newWidth]{};
-        std::copy_n(_dbcsPaddedColumns, colsToCopy, dbcsPaddedColumns);
-    }
-
-    {
-        const auto end = std::copy_n(_chars, charsToCopy, chars);
-        std::fill_n(end, trailingWhitespace, L' ');
-    }
-    {
-        auto end = std::copy_n(_indices, colsToCopy, indices);
-        for (auto i = colsToCopy; i < newWidth; ++i)
-        {
-            *end++ = i;
-        }
-        *end = charsCapacity;
-    }
-
-    if (_charsCapacity != _indicesCount)
-    {
-        delete[] _chars;
-    }
-    if (_dbcsPaddedColumns)
-    {
-        delete[] _dbcsPaddedColumns;
-    }
-
-    _chars = chars;
-    _charsCapacity = charsCapacity;
-    _indices = indices;
-    _indicesCount = newWidth;
-    _dbcsPaddedColumns = dbcsPaddedColumns;
-
-    _attr.resize_trailing_extent(gsl::narrow_cast<uint16_t>(newWidth));
+    _attr.replace(gsl::narrow<uint16_t>(beginIndex), gsl::narrow<uint16_t>(endIndex), newAttr);
 }
 
-void ROW::ReplaceCharacters(size_t x, size_t width, const std::wstring_view& chars)
+bool ROW::SetAttrToEnd(const til::CoordType beginIndex, const TextAttribute attr)
 {
-    const auto col1 = x;
-    const auto col2 = x + width;
+    _attr.replace(gsl::narrow<uint16_t>(beginIndex), _attr.size(), attr);
+    return true;
+}
+
+void ROW::ReplaceCharacters(til::CoordType x, til::CoordType width, const std::wstring_view& chars)
+{
+    const auto col1 = gsl::narrow<uint16_t>(x);
+    const auto col2 = gsl::narrow<uint16_t>(x + width);
 
     if ((col1 >= col2) | (col2 > _indicesCount) | chars.empty())
     {
         return;
     }
 
-    auto col0 = col1;
-    const auto ch0 = _indices[col0];
+    uint16_t col0 = col1;
+    const uint16_t ch0 = _indices[col0];
     for (; col0 != 0 && _indices[col0 - 1] == ch0; --col0)
     {
     }
 
-    auto col3 = col2 - 1;
-    const auto ch1ref = _indices[col3];
+    uint16_t col3 = col2 - 1;
     uint16_t ch1;
-    while ((ch1 = _indices[++col3]) == ch1ref)
     {
+        const uint16_t ch1ref = _indices[col3];
+        while ((ch1 = _indices[++col3]) == ch1ref)
+        {
+        }
     }
 
-    const auto leadingSpaces = col1 - col0;
-    const auto trailingSpaces = col3 - col2;
-    const auto insertedChars = chars.size() + leadingSpaces + trailingSpaces;
-    const auto newCh1 = insertedChars + ch0;
+    const size_t leadingSpaces = col1 - col0;
+    const size_t trailingSpaces = col3 - col2;
+    const size_t insertedChars = chars.size() + leadingSpaces + trailingSpaces;
+    const size_t newCh1 = insertedChars + ch0;
 
     if (newCh1 != ch1)
     {
@@ -295,7 +269,7 @@ void ROW::ReplaceCharacters(size_t x, size_t width, const std::wstring_view& cha
     }
 }
 
-void ROW::_resizeChars(size_t ch0, size_t ch1, size_t newCh1, size_t col3)
+void ROW::_resizeChars(uint16_t ch0, uint16_t ch1, size_t newCh1, uint16_t col3)
 {
     const auto diff = newCh1 - ch1;
     const auto currentLength = _indices[_indicesCount];
@@ -307,13 +281,14 @@ void ROW::_resizeChars(size_t ch0, size_t ch1, size_t newCh1, size_t col3)
     }
     else
     {
-        const auto newCapacity = std::max(newLength, _charsCapacity + (_charsCapacity >> 1));
+        const auto minCapacity = static_cast<size_t>(_charsCapacity) + (_charsCapacity >> 1);
+        const auto newCapacity = gsl::narrow<uint16_t>(std::max(newLength, minCapacity));
         const auto chars = new wchar_t[newCapacity];
 
         std::copy_n(_chars, ch0, chars);
         std::copy_n(_chars + ch1, currentLength - ch1, chars + newCh1);
 
-        if (_charsCapacity != _indicesCount)
+        if (_chars != _charsBuffer)
         {
             delete[] _chars;
         }
@@ -328,10 +303,217 @@ void ROW::_resizeChars(size_t ch0, size_t ch1, size_t newCh1, size_t col3)
     }
 }
 
-void ROW::ClearCell(const size_t column)
+void ROW::Resize(wchar_t* const charsBuffer, uint16_t* const indices, const uint16_t newWidth)
 {
-    static constexpr std::wstring_view space{ L" " };
-    ReplaceCharacters(column, 1, space);
+    uint16_t colsToCopy = 0;
+    uint16_t charsToCopy = 0;
+    if (_indices)
+    {
+        colsToCopy = gsl::narrow_cast<uint16_t>(std::min(_indicesCount, newWidth));
+        charsToCopy = _indices[colsToCopy];
+        for (; colsToCopy != 0 && _indices[colsToCopy - 1] == charsToCopy; --colsToCopy)
+        {
+        }
+    }
+
+    const uint16_t trailingWhitespace = newWidth - colsToCopy;
+    const uint16_t charsCapacity = charsToCopy + trailingWhitespace;
+    auto chars = charsBuffer;
+    if (charsCapacity > newWidth)
+    {
+        chars = new wchar_t[charsCapacity];
+    }
+
+    bool* dbcsPaddedColumns = nullptr;
+    if (_dbcsPaddedColumns)
+    {
+        dbcsPaddedColumns = new bool[newWidth]{};
+        std::copy_n(_dbcsPaddedColumns, colsToCopy, dbcsPaddedColumns);
+    }
+
+    {
+        const auto it = std::copy_n(_chars, charsToCopy, chars);
+        std::fill_n(it, trailingWhitespace, L' ');
+    }
+    {
+        const auto it = std::copy_n(_indices, colsToCopy, indices);
+        // The _indices array is 1 wider than newWidth indicates.
+        // This is because the extra column contains the past-the-end index into _chars.
+        std::iota(it, it + trailingWhitespace + 1, charsToCopy);
+    }
+
+    _dealloc();
+
+    _charsBuffer = charsBuffer;
+    _chars = chars;
+    _indices = indices;
+    _dbcsPaddedColumns = dbcsPaddedColumns;
+
+    _charsCapacity = charsCapacity;
+    _indicesCount = newWidth;
+
+    _attr.resize_trailing_extent(gsl::narrow_cast<uint16_t>(newWidth));
+}
+
+void ROW::TransferAttributes(const til::small_rle<TextAttribute, uint16_t, 1>& attr, til::CoordType newWidth)
+{
+    _attr = attr;
+    _attr.resize_trailing_extent(gsl::narrow<uint16_t>(newWidth));
+}
+
+const til::small_rle<TextAttribute, uint16_t, 1>& ROW::Attributes() const noexcept
+{
+    return _attr;
+}
+
+TextAttribute ROW::GetAttrByColumn(const til::CoordType column) const
+{
+    return _attr.at(gsl::narrow<uint16_t>(column));
+}
+
+std::vector<uint16_t> ROW::GetHyperlinks() const
+{
+    std::vector<uint16_t> ids;
+    for (const auto& run : _attr.runs())
+    {
+        if (run.value.IsHyperlink())
+        {
+            ids.emplace_back(run.value.GetHyperlinkId());
+        }
+    }
+    return ids;
+}
+
+uint16_t ROW::size() const noexcept
+{
+    return _indicesCount;
+}
+
+til::CoordType ROW::MeasureLeft() const noexcept
+{
+    const auto beg = _chars;
+    const auto end = beg + _indices[_indicesCount];
+    auto it = beg;
+
+    for (; it != end; ++it)
+    {
+        if (*it != L' ')
+        {
+            break;
+        }
+    }
+
+    return static_cast<til::CoordType>(it - beg);
+}
+
+til::CoordType ROW::MeasureRight() const noexcept
+{
+    const auto beg = _chars;
+    const auto end = beg + _indices[_indicesCount];
+    // We can always subtract 1, because _indicesCount/_charsCount are always greater 0.
+    auto it = end;
+
+    for (; it != beg; --it)
+    {
+        if (it[-1] != L' ')
+        {
+            break;
+        }
+    }
+
+    return static_cast<til::CoordType>(it - beg);
+}
+
+bool ROW::ContainsText() const noexcept
+{
+    auto it = _chars;
+    const auto end = it + _indices[_indicesCount];
+
+    for (; it != end; ++it)
+    {
+        if (*it != L' ')
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+InassignableStringView ROW::GlyphAt(til::CoordType column) const noexcept
+{
+    column = std::min(column, _indicesCount - 1);
+
+    const auto current = _indices[column];
+    while (column <= _indicesCount && _indices[++column] == current)
+    {
+    }
+
+    const auto len = gsl::narrow_cast<size_t>(_indices[column] - current);
+    return { _chars + current, len };
+}
+
+InassignableDbcsAttribute ROW::DbcsAttrAt(til::CoordType column) const noexcept
+{
+    column = std::min(column, _indicesCount - 1);
+
+    const auto idx = _indices[column];
+
+    auto attr = DbcsAttribute::Attribute::Single;
+    if (column > 0 && _indices[column - 1] == idx)
+    {
+        attr = DbcsAttribute::Attribute::Trailing;
+    }
+    else if (column < _indicesCount && _indices[column + 1] == idx)
+    {
+        attr = DbcsAttribute::Attribute::Leading;
+    }
+
+    return { attr };
+}
+
+InassignableStringView ROW::GetText() const noexcept
+{
+    return { _chars, _indices[_indicesCount] };
+}
+
+DelimiterClass ROW::DelimiterClassAt(til::CoordType column, const std::wstring_view& wordDelimiters) const noexcept
+{
+    column = std::min(column, _indicesCount - 1);
+
+    const auto glyph = _chars[_indices[column]];
+
+    if (glyph <= L' ')
+    {
+        return DelimiterClass::ControlChar;
+    }
+    else if (wordDelimiters.find(glyph) != std::wstring_view::npos)
+    {
+        return DelimiterClass::DelimiterChar;
+    }
+    else
+    {
+        return DelimiterClass::RegularChar;
+    }
+}
+
+RowTextIterator ROW::CharsBegin() const noexcept
+{
+    return { _chars, _indices, _indicesCount, 0, 0 };
+}
+
+RowTextIterator ROW::CharsEnd() const noexcept
+{
+    return { _chars, _indices, _indicesCount, _indicesCount, _indicesCount };
+}
+
+bool* ROW::_getDbcsPaddedColumns() noexcept
+{
+    if (!_dbcsPaddedColumns)
+    {
+        _dbcsPaddedColumns = new bool[_indicesCount]{};
+    }
+    return _dbcsPaddedColumns;
 }
 
 #pragma warning(pop)

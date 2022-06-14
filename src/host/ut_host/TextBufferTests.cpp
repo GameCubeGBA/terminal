@@ -1994,7 +1994,7 @@ void TextBufferTests::TestBurrito()
 
 void TextBufferTests::TestOverwriteChars()
 {
-    COORD bufferSize{ 10, 3 };
+    til::size bufferSize{ 10, 3 };
     UINT cursorSize = 12;
     TextAttribute attr{ 0x7f };
     TextBuffer buffer{ bufferSize, attr, cursorSize, false, _renderer };

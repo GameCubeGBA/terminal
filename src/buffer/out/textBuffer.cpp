@@ -17,17 +17,28 @@ static_assert(sizeof(wil::unique_virtualalloc_ptr<void>) == 8);
 
 struct BufferAllocator
 {
-    BufferAllocator(size_t x, size_t y)
+    BufferAllocator(til::CoordType x, til::CoordType y)
     {
-        const auto charsStrideVal = x * sizeof(wchar_t);
-        const auto charsAreaSize = charsStrideVal * y;
-        const auto indicesStrideVal = (x + 1) * sizeof(uint16_t);
-        const auto indicesAreaSize = indicesStrideVal * y;
-        _buffer = wil::unique_virtualalloc_ptr<std::byte>{ static_cast<std::byte*>(VirtualAlloc(nullptr, charsAreaSize + indicesAreaSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)) };
-        _charsBase = _buffer.get();
-        _charsStride = charsStrideVal;
-        _indicesBase = _buffer.get() + charsAreaSize;
-        _indicesStride = indicesStrideVal;
+        const auto xn = gsl::narrow<uint16_t>(x);
+        const auto yn = gsl::narrow<uint16_t>(y);
+
+        const auto charsBytes = xn * sizeof(wchar_t);
+        // The ROW::_indices array stores 1 more item than the buffer is wide.
+        // That extra column stores the past-the-end _chars pointer.
+        const auto indicesBytes = xn * sizeof(uint16_t) + sizeof(uint16_t);
+        const auto rowStride = charsBytes + indicesBytes;
+        // 65535*65535 cells would result in a charsAreaSize of 8GiB.
+        // --> Use uint64_t so that we can safely do our calculations even on x86.
+        const auto allocSize = gsl::narrow<size_t>(static_cast<uint64_t>(rowStride) * static_cast<uint64_t>(yn));
+
+        _buffer = wil::unique_virtualalloc_ptr<std::byte>{ static_cast<std::byte*>(VirtualAlloc(nullptr, allocSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)) };
+        THROW_IF_NULL_ALLOC(_buffer);
+
+        _data = _buffer.get();
+        _rowStride = rowStride;
+        _indicesOffset = charsBytes;
+        _x = xn;
+        _y = yn;
     }
 
     bool operator==(std::nullptr_t) const noexcept
@@ -37,19 +48,28 @@ struct BufferAllocator
 
     BufferAllocator& operator++() noexcept
     {
-        _charsBase += _charsStride;
-        _indicesBase += _indicesStride;
+        _data += _rowStride;
         return *this;
     }
 
     wchar_t* chars() const noexcept
     {
-        return reinterpret_cast<wchar_t*>(_charsBase);
+        return reinterpret_cast<wchar_t*>(_data);
     }
 
     uint16_t* indices() const noexcept
     {
-        return reinterpret_cast<uint16_t*>(_indicesBase);
+        return reinterpret_cast<uint16_t*>(_data + _indicesOffset);
+    }
+
+    uint16_t x() const noexcept
+    {
+        return _x;
+    }
+
+    uint16_t y() const noexcept
+    {
+        return _y;
     }
 
     wil::unique_virtualalloc_ptr<std::byte>&& take() noexcept
@@ -59,10 +79,11 @@ struct BufferAllocator
 
 private:
     wil::unique_virtualalloc_ptr<std::byte> _buffer;
-    std::byte* _charsBase;
-    size_t _charsStride;
-    std::byte* _indicesBase;
-    size_t _indicesStride;
+    std::byte* _data;
+    size_t _rowStride;
+    size_t _indicesOffset;
+    uint16_t _x;
+    uint16_t _y;
 };
 
 using namespace Microsoft::Console;
@@ -91,13 +112,12 @@ TextBuffer::TextBuffer(const til::size screenBufferSize,
     _isActiveBuffer{ isActiveBuffer },
     _renderer{ renderer }
 {
-    BufferAllocator allocator(screenBufferSize.X, screenBufferSize.Y);
-    THROW_IF_NULL_ALLOC(allocator);
+    BufferAllocator allocator{ screenBufferSize.X, screenBufferSize.Y };
 
     _storage.reserve(static_cast<size_t>(screenBufferSize.Y));
     for (SHORT i = 0; i < screenBufferSize.Y; ++i, ++allocator)
     {
-        _storage.emplace_back(allocator.chars(), allocator.indices(), screenBufferSize.X, _currentAttributes);
+        _storage.emplace_back(allocator.chars(), allocator.indices(), allocator.x(), _currentAttributes);
     }
 
     _charBuffer = allocator.take();
@@ -303,7 +323,7 @@ bool TextBuffer::_AssertValidDoubleByteSequence(const DbcsAttribute dbcsAttribut
         // Erase previous character into an N type.
         try
         {
-            prevRow.ClearColumn(coordPrevPosition.X);
+            prevRow.ClearCell(coordPrevPosition.X);
         }
         catch (...)
         {
@@ -624,7 +644,7 @@ bool TextBuffer::IncrementCircularBuffer(const bool inVtMode)
         // the current background color, but with no meta attributes set.
         fillAttributes.SetStandardErase();
     }
-    const auto fSuccess = _storage.at(_firstRow).Reset(fillAttributes);
+    const auto fSuccess = GetRowByOffset(0).Reset(fillAttributes);
     if (fSuccess)
     {
         // Now proceed to increment.
@@ -946,14 +966,9 @@ void TextBuffer::Reset()
 // - Success if successful. Invalid parameter if screen buffer size is unexpected. No memory if allocation failed.
 [[nodiscard]] NTSTATUS TextBuffer::ResizeTraditional(const til::size newSize) noexcept
 {
-    RETURN_HR_IF(E_INVALIDARG, newSize.X < 0 || newSize.Y < 0);
-
     try
     {
-        const auto cx = gsl::narrow_cast<size_t>(newSize.X);
-        const auto cy = gsl::narrow_cast<size_t>(newSize.Y);
-        BufferAllocator allocator(cx, cy);
-        RETURN_IF_NULL_ALLOC(allocator);
+        BufferAllocator allocator{ newSize.X, newSize.Y };
 
         const auto currentSize = GetSize().Dimensions();
         const auto attributes = GetCurrentAttributes();
@@ -972,8 +987,8 @@ void TextBuffer::Reset()
         // realloc in the Y direction
         // remove rows if we're shrinking
         {
-            ROW row{ nullptr, nullptr, gsl::narrow_cast<uint16_t>(cx), attributes };
-            _storage.resize(cy, row);
+            ROW row{ nullptr, nullptr, allocator.x(), attributes };
+            _storage.resize(allocator.y(), row);
         }
 
         // Now that we've tampered with the row placement, refresh all the row IDs.
@@ -981,7 +996,7 @@ void TextBuffer::Reset()
         // and cleanup the UnicodeStorage characters that might fall outside the resized buffer.
         for (auto& it : _storage)
         {
-            it.Resize(allocator.chars(), allocator.indices(), gsl::narrow_cast<uint16_t>(cx));
+            it.Resize(allocator.chars(), allocator.indices(), allocator.x());
             ++allocator;
         }
 
@@ -1344,7 +1359,7 @@ void TextBuffer::_PruneHyperlinks()
     // If the buffer does not contain the same reference, we can remove that hyperlink from our map
     // This way, obsolete hyperlink references are cleared from our hyperlink map instead of hanging around
     // Get all the hyperlink references in the row we're erasing
-    const auto hyperlinks = _storage.at(_firstRow).GetHyperlinks();
+    const auto hyperlinks = GetRowByOffset(0).GetHyperlinks();
 
     if (!hyperlinks.empty())
     {

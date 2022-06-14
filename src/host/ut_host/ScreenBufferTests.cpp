@@ -3329,7 +3329,7 @@ void ScreenBufferTests::DeleteCharsNearEndOfLine()
     ss << L"\x1b[" << numCharsToDelete << L"P"; // Delete N chars
     stateMachine.ProcessString(ss.str());
 
-    VERIFY_ARE_EQUAL(COORD({ mainView.Width() - dx, 0 }), mainCursor.GetPosition());
+    VERIFY_ARE_EQUAL(til::point( mainView.Width() - dx, 0 ), mainCursor.GetPosition());
     auto iter = tbi.GetCellDataAt({ 0, 0 });
     auto expectedNumSpaces = std::min(dx, numCharsToDelete);
     for (auto x = 0; x < mainView.Width() - expectedNumSpaces; x++)

@@ -20,7 +20,7 @@ winrt::Windows::Foundation::IAsyncOperation<winrt::hstring> OpenImagePicker(HWND
         THROW_IF_FAILED(dialog->SetClientGuid(clientGuidImagePicker));
         try
         {
-            auto pictureFolderShellItem{ winrt::capture<IShellItem>(&SHGetKnownFolderItem, FOLDERID_PicturesLibrary, KF_FLAG_DEFAULT, nullptr) };
+            const auto pictureFolderShellItem{ winrt::capture<IShellItem>(&SHGetKnownFolderItem, FOLDERID_PicturesLibrary, KF_FLAG_DEFAULT, nullptr) };
             dialog->SetDefaultFolder(pictureFolderShellItem.get());
         }
         CATCH_LOG(); // non-fatal

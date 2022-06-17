@@ -3,7 +3,6 @@
 
 #include "pch.h"
 #include "Terminal.hpp"
-#include <DefaultSettings.h>
 
 using namespace Microsoft::Terminal::Core;
 using namespace Microsoft::Console::Types;
@@ -120,7 +119,6 @@ const std::vector<size_t> Terminal::GetPatternId(const til::point location) cons
         }
         return result;
     }
-    return {};
 }
 
 std::pair<COLORREF, COLORREF> Terminal::GetAttributeColors(const TextAttribute& attr) const noexcept
@@ -226,5 +224,5 @@ const bool Terminal::IsUiaDataInitialized() const noexcept
     // when a screen reader requests it. However, the terminal might not be fully
     // initialized yet. So we use this to check if any crucial components of
     // UiaData are not yet initialized.
-    return !!_mainBuffer;
+    return _mainBuffer != nullptr;
 }

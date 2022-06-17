@@ -147,7 +147,7 @@ void IslandWindow::SetSnapDimensionCallback(std::function<float(bool, float)> pf
 void IslandWindow::_HandleCreateWindow(const WPARAM, const LPARAM lParam) noexcept
 {
     // Get proposed window rect from create structure
-    auto pcs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+    const CREATESTRUCTW* pcs = reinterpret_cast<CREATESTRUCTW*>(lParam);
     til::rect rc;
     rc.left = pcs->x;
     rc.top = pcs->y;
@@ -191,13 +191,13 @@ LRESULT IslandWindow::_OnSizing(const WPARAM wParam, const LPARAM lParam)
     {
         // If we haven't been given the callback that would adjust the dimension,
         // then we can't do anything, so just bail out.
-        return false;
+        return FALSE;
     }
 
-    auto winRect = reinterpret_cast<LPRECT>(lParam);
+    const auto winRect = reinterpret_cast<LPRECT>(lParam);
 
     // Find nearest monitor.
-    auto hmon = MonitorFromRect(winRect, MONITOR_DEFAULTTONEAREST);
+    const auto hmon = MonitorFromRect(winRect, MONITOR_DEFAULTTONEAREST);
 
     // This API guarantees that dpix and dpiy will be equal, but neither is an
     // optional parameter so give two UINTs.
@@ -223,7 +223,7 @@ LRESULT IslandWindow::_OnSizing(const WPARAM wParam, const LPARAM lParam)
         // Stuff our current window size into the lParam, and return true. This
         // will tell User32 to use our current dimensions to resize to.
         ::GetWindowRect(_window.get(), winRect);
-        return true;
+        return TRUE;
     }
 
     if (wParam != WMSZ_TOP && wParam != WMSZ_BOTTOM)
@@ -275,7 +275,7 @@ LRESULT IslandWindow::_OnSizing(const WPARAM wParam, const LPARAM lParam)
         break;
     }
 
-    return true;
+    return TRUE;
 }
 
 // Method Description:
@@ -299,9 +299,9 @@ LRESULT IslandWindow::_OnMoving(const WPARAM /*wParam*/, const LPARAM lParam)
         // Stuff our current window into the lParam, and return true. This
         // will tell User32 to use our current position to move to.
         ::GetWindowRect(_window.get(), winRect);
-        return true;
+        return TRUE;
     }
-    return false;
+    return FALSE;
 }
 
 void IslandWindow::Initialize()

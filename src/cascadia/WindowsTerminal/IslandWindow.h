@@ -21,7 +21,7 @@ public:
     virtual ~IslandWindow() override;
 
     virtual void MakeWindow() noexcept;
-    void Close();
+    static void Close();
     virtual void OnSize(const UINT width, const UINT height);
     HWND GetInteropHandle() const;
 
